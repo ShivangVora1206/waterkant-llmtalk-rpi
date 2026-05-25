@@ -95,8 +95,17 @@ class AudioPlayback:
         self._playing = False
         self._interrupt = asyncio.Event()
 
-    async def play(self, chunks: AsyncIterator[bytes]) -> None:
-        """Play chunks. Returns when all chunks are played or interrupted."""
+    async def play(
+        self,
+        chunks: AsyncIterator[bytes],
+        input_sample_rate: int = PIPER_SAMPLE_RATE,
+    ) -> None:
+        """Play chunks. Returns when all chunks are played or interrupted.
+
+        input_sample_rate: sample rate of the incoming PCM data.  Defaults to
+        PIPER_SAMPLE_RATE (22050) so TTS output is resampled to the device
+        rate automatically.  Pass self.sample_rate for pre-rendered audio.
+        """
         import sounddevice as sd
 
         self._playing = True
@@ -105,6 +114,7 @@ class AudioPlayback:
         write_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue(maxsize=20)
 
         resolved = _resolve_output_device(self.device)
+        in_rate = input_sample_rate
 
         def _blocking_player() -> None:
             with sd.RawOutputStream(
@@ -120,7 +130,7 @@ class AudioPlayback:
                     if chunk is None:
                         break
                     samples = np.frombuffer(chunk, dtype=np.int16)
-                    resampled = _resample(samples, PIPER_SAMPLE_RATE, self.sample_rate)
+                    resampled = _resample(samples, in_rate, self.sample_rate)
                     stream.write(resampled.tobytes())
 
         player_future = loop.run_in_executor(None, _blocking_player)
@@ -157,4 +167,4 @@ class AudioPlayback:
             for i in range(0, len(wave), chunk_size):
                 yield wave[i : i + chunk_size].tobytes()
 
-        await self.play(_gen())
+        await self.play(_gen(), input_sample_rate=self.sample_rate)
