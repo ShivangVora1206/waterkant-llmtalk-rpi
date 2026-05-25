@@ -40,6 +40,8 @@ class VADProcessor:
         self.sample_rate = sample_rate
 
         self._session = None
+        self._input_names: set = set()
+        self._output_names: list = []
         self._h = np.zeros((2, 1, 64), dtype=np.float32)
         self._c = np.zeros((2, 1, 64), dtype=np.float32)
 
@@ -61,7 +63,18 @@ class VADProcessor:
         opts.intra_op_num_threads = 1
         opts.log_severity_level = 3  # suppress INFO/WARNING from ORT (GPU probe noise)
         self._session = ort.InferenceSession(str(MODEL_PATH), sess_options=opts)
-        logger.info("Silero VAD loaded from %s", MODEL_PATH)
+
+        # Discover input/output names so we work with any Silero export variant
+        self._input_names = {inp.name for inp in self._session.get_inputs()}
+        self._output_names = [out.name for out in self._session.get_outputs()]
+        logger.info(
+            "Silero VAD loaded: inputs=%s outputs=%s",
+            sorted(self._input_names), self._output_names,
+        )
+        print(
+            f"[VAD] loaded inputs={sorted(self._input_names)} outputs={self._output_names}",
+            flush=True,
+        )
 
     def _download(self) -> None:
         import urllib.request
@@ -75,12 +88,31 @@ class VADProcessor:
         self._load()
         x = chunk.astype(np.float32)[np.newaxis, :]
         sr = np.array(self.sample_rate, dtype=np.int64)
-        out = self._session.run(
-            None,
-            {"input": x, "sr": sr, "h": self._h, "c": self._c},
-        )
-        prob, self._h, self._c = out[0], out[1], out[2]
-        return float(prob[0, 0])
+
+        # Build feed dict from whatever names this model export uses
+        feed: dict = {"input": x}
+        if "sr" in self._input_names:
+            feed["sr"] = sr
+        if "h" in self._input_names:
+            feed["h"] = self._h
+        if "c" in self._input_names:
+            feed["c"] = self._c
+        # Some exports use state_h / state_c
+        if "state_h" in self._input_names:
+            feed["state_h"] = self._h
+        if "state_c" in self._input_names:
+            feed["state_c"] = self._c
+
+        out = self._session.run(None, feed)
+
+        # Update LSTM state from whichever output names this export uses
+        for i, name in enumerate(self._output_names):
+            if name in ("hn", "h", "state_h", "new_h"):
+                self._h = out[i]
+            elif name in ("cn", "c", "state_c", "new_c"):
+                self._c = out[i]
+
+        return float(out[0].flat[0])
 
     def feed(self, pcm_int16: bytes) -> VADEvent:
         """Feed a frame of int16 PCM bytes; return the current VAD event."""

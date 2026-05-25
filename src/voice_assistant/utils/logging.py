@@ -32,6 +32,9 @@ def configure_logging(log_level: str = "INFO") -> None:
         format="%(message)s",
     )
 
+    # uvicorn sets the root logger to WARNING; override so our INFO logs are visible
+    logging.getLogger("voice_assistant").setLevel(level)
+
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
