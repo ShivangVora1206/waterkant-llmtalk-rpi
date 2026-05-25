@@ -34,12 +34,48 @@ async def get_devices():
     return list_devices()
 
 
+@router.get("/api/audio/devices/diagnostic")
+async def get_devices_diagnostic():
+    """Return all sounddevice devices plus current default indices."""
+    try:
+        import sounddevice as sd
+        devs = list_devices()
+        try:
+            default_in = sd.query_devices(kind="input")
+            default_in_idx = default_in.get("index", -1) if isinstance(default_in, dict) else getattr(default_in, "index", -1)
+        except Exception as e:
+            default_in_idx = f"error: {e}"
+        try:
+            default_out = sd.query_devices(kind="output")
+            default_out_idx = default_out.get("index", -1) if isinstance(default_out, dict) else getattr(default_out, "index", -1)
+        except Exception as e:
+            default_out_idx = f"error: {e}"
+        return {
+            "default_input_index": default_in_idx,
+            "default_output_index": default_out_idx,
+            "devices": devs,
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+import logging as _logging
+_audio_log = _logging.getLogger(__name__)
+
+
 @router.post("/api/audio/test/speaker")
 async def test_speaker(request: Request):
     body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
     freq = float(body.get("frequency", 440))
     pb = _playback(request)
-    asyncio.create_task(pb.play_tone(freq, 1.0))
+
+    async def _play_tone():
+        try:
+            await pb.play_tone(freq, 1.0)
+        except Exception as exc:
+            _audio_log.error("Speaker test failed: %s", exc, exc_info=True)
+
+    asyncio.create_task(_play_tone())
     return {"status": "playing"}
 
 
@@ -56,7 +92,10 @@ async def test_speaker_voice(request: Request):
     pb = _playback(request)
 
     async def _play():
-        await pb.play(tts.synthesise(text, params))
+        try:
+            await pb.play(tts.synthesise(text, params))
+        except Exception as exc:
+            _audio_log.error("Voice preview failed: %s", exc, exc_info=True)
 
     asyncio.create_task(_play())
     return {"status": "playing", "text": text}
