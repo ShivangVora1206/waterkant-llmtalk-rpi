@@ -10,8 +10,19 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-PLAYBACK_SAMPLE_RATE = 22050
+PLAYBACK_SAMPLE_RATE = 48000   # PipeWire native rate; Piper output is resampled up
+PIPER_SAMPLE_RATE = 22050      # Piper always outputs 22050 Hz
 PLAYBACK_CHANNELS = 1
+
+
+def _resample(data: np.ndarray, from_rate: int, to_rate: int) -> np.ndarray:
+    """Simple linear-interpolation resampler (no extra deps)."""
+    if from_rate == to_rate:
+        return data
+    target_len = int(len(data) * to_rate / from_rate)
+    x_old = np.linspace(0, 1, len(data))
+    x_new = np.linspace(0, 1, target_len)
+    return np.interp(x_new, x_old, data).astype(np.int16)
 
 
 def _resolve_output_device(device: Optional[str | int]) -> Optional[str | int]:
@@ -108,7 +119,9 @@ class AudioPlayback:
                     ).result(timeout=5)
                     if chunk is None:
                         break
-                    stream.write(chunk)
+                    samples = np.frombuffer(chunk, dtype=np.int16)
+                    resampled = _resample(samples, PIPER_SAMPLE_RATE, self.sample_rate)
+                    stream.write(resampled.tobytes())
 
         player_future = loop.run_in_executor(None, _blocking_player)
 
