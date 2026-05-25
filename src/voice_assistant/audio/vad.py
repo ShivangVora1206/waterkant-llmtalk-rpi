@@ -59,6 +59,7 @@ class VADProcessor:
         opts = ort.SessionOptions()
         opts.inter_op_num_threads = 1
         opts.intra_op_num_threads = 1
+        opts.log_severity_level = 3  # suppress INFO/WARNING from ORT (GPU probe noise)
         self._session = ort.InferenceSession(str(MODEL_PATH), sess_options=opts)
         logger.info("Silero VAD loaded from %s", MODEL_PATH)
 
