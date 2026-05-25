@@ -20,9 +20,18 @@ info "Installing system dependencies…"
 sudo apt-get update -qq
 sudo apt-get install -y --no-install-recommends \
     libportaudio2 libsndfile1 ffmpeg alsa-utils \
-    python3.11 python3.11-venv python3-pip \
+    python3 python3-venv python3-pip \
     git curl wget ca-certificates \
     build-essential
+
+# Verify Python >= 3.11
+PY_VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+PY_MAJOR=$(echo "$PY_VER" | cut -d. -f1)
+PY_MINOR=$(echo "$PY_VER" | cut -d. -f2)
+if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 11 ]; }; then
+    die "Python 3.11+ required, found $PY_VER. Upgrade your OS or install Python manually."
+fi
+info "Python $PY_VER OK"
 
 # --------------------------------------------------------------------
 # 2. uv (Python package manager)
@@ -30,8 +39,11 @@ sudo apt-get install -y --no-install-recommends \
 if ! command -v uv &>/dev/null; then
     info "Installing uv…"
     curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.cargo/bin:$PATH"
+    # uv installs to ~/.local/bin on Linux
+    export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 fi
+# Ensure uv is on PATH for the rest of this script
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 info "uv version: $(uv --version)"
 
 # --------------------------------------------------------------------
@@ -82,14 +94,24 @@ uv sync --frozen 2>/dev/null || uv sync
 # --------------------------------------------------------------------
 FRONTEND_DIR="$REPO_DIR/frontend"
 if [ -d "$FRONTEND_DIR" ]; then
+    # Install Node.js if missing (needed for pnpm)
+    if ! command -v node &>/dev/null; then
+        info "Installing Node.js via NodeSource…"
+        curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+        sudo apt-get install -y nodejs
+    fi
+    info "Node: $(node --version), npm: $(npm --version)"
+
+    # Install pnpm
     if ! command -v pnpm &>/dev/null; then
         info "Installing pnpm…"
-        npm install -g pnpm 2>/dev/null || curl -fsSL https://get.pnpm.io/install.sh | sh
-        export PATH="$HOME/.local/share/pnpm:$PATH"
+        npm install -g pnpm
     fi
+    info "pnpm: $(pnpm --version)"
+
     info "Building frontend…"
     cd "$FRONTEND_DIR"
-    pnpm install --frozen-lockfile 2>/dev/null || pnpm install
+    pnpm install
     pnpm build
     cd "$REPO_DIR"
 fi
@@ -105,10 +127,12 @@ bash "$REPO_DIR/scripts/pull_default_models.sh"
 # --------------------------------------------------------------------
 if ! id "$SERVICE_USER" &>/dev/null; then
     info "Creating service user: $SERVICE_USER"
-    sudo useradd -r -m -s /bin/false "$SERVICE_USER" || true
+    sudo useradd -r -m -s /bin/false "$SERVICE_USER"
     sudo usermod -aG audio "$SERVICE_USER"
 fi
-sudo chown -R "$SERVICE_USER:$SERVICE_USER" "$REPO_DIR"
+# Give the service user read access to the repo and write access to data/
+sudo chown -R "$SERVICE_USER:$SERVICE_USER" "$REPO_DIR/data" 2>/dev/null || true
+sudo chmod -R a+rX "$REPO_DIR"
 
 # --------------------------------------------------------------------
 # 9. systemd service
