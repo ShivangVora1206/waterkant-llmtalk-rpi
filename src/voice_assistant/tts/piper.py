@@ -233,8 +233,21 @@ class PiperBackend(TTSBackend):
         # yield only the raw int16 PCM frames so the playback resampler works.
         import wave
         buf.seek(0)
+        raw_bytes = buf.getvalue()
+        print(f"[TTS] synthesized {len(raw_bytes)} bytes for: {text[:60]!r}", flush=True)
+        if len(raw_bytes) <= 44:
+            logger.warning("Piper synthesis produced empty output for: %r", text[:80])
+            print(f"[TTS] WARNING: empty synthesis output", flush=True)
+            return
+
+        buf.seek(0)
         with wave.open(buf, "rb") as wf:
             pcm_data = wf.readframes(wf.getnframes())
+
+        print(f"[TTS] PCM frames: {len(pcm_data)} bytes", flush=True)
+        if not pcm_data:
+            logger.warning("Piper WAV has no PCM frames for: %r", text[:80])
+            return
 
         chunk_size = 4096
         for i in range(0, len(pcm_data), chunk_size):
