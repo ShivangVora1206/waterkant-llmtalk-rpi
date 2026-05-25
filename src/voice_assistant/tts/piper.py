@@ -66,18 +66,20 @@ class PiperBackend(TTSBackend):
     def _find_piper(self) -> str:
         if self._piper_bin:
             return self._piper_bin
+        # Prefer the Python package — it's in the venv and works on ARM64
+        try:
+            from piper.voice import PiperVoice  # type: ignore  # noqa: F401
+            self._piper_bin = "__piper_python__"
+            return "__piper_python__"
+        except ImportError:
+            pass
+        # Fall back to system binary
         candidate = shutil.which("piper")
         if candidate:
             self._piper_bin = candidate
             return candidate
-        # Try piper-tts Python package fallback
-        try:
-            from piper import PiperVoice  # type: ignore
-            return "__piper_python__"
-        except ImportError:
-            pass
         raise FileNotFoundError(
-            "Piper not found. Install via 'pip install piper-tts' or place piper binary on PATH."
+            "Piper TTS not found. Run: uv pip install piper-tts"
         )
 
     def _voice_path(self, voice: Optional[str] = None) -> Path:
@@ -191,13 +193,22 @@ class PiperBackend(TTSBackend):
         noise_scale: float,
         length_scale: float,
     ) -> AsyncIterator[bytes]:
-        from piper import PiperVoice  # type: ignore
         import io
+        # piper-tts package uses piper.voice.PiperVoice
+        try:
+            from piper.voice import PiperVoice  # type: ignore
+        except ImportError:
+            from piper import PiperVoice  # type: ignore  # older package layout
 
         onnx_path = self._voice_path(voice)
-        piper_voice = PiperVoice.load(str(onnx_path))
+        loop = asyncio.get_event_loop()
+        # Run in executor so it doesn't block the event loop
+        piper_voice = await loop.run_in_executor(None, PiperVoice.load, str(onnx_path))
         buf = io.BytesIO()
-        piper_voice.synthesize(text, buf, noise_scale=noise_scale, length_scale=length_scale)
+        await loop.run_in_executor(
+            None,
+            lambda: piper_voice.synthesize(text, buf, noise_scale=noise_scale, length_scale=length_scale),
+        )
         data = buf.getvalue()
         chunk_size = 4096
         for i in range(0, len(data), chunk_size):

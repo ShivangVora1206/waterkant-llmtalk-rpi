@@ -14,6 +14,61 @@ PLAYBACK_SAMPLE_RATE = 22050
 PLAYBACK_CHANNELS = 1
 
 
+def _resolve_output_device(device: Optional[str | int]) -> Optional[str | int]:
+    """Return a valid sounddevice output device identifier, or None for system default."""
+    import sounddevice as sd
+
+    if device is not None:
+        return device
+
+    # Try querying the default — if it returns -1 there is no ALSA default,
+    # which happens on PipeWire-only setups. Fall back to the first output device found.
+    try:
+        info = sd.query_devices(kind="output")
+        idx = info.get("index", -1) if isinstance(info, dict) else getattr(info, "index", -1)
+        if idx >= 0:
+            return None  # sounddevice default works fine
+    except Exception:
+        pass
+
+    # Enumerate and take the first device with output channels
+    try:
+        for i, dev in enumerate(sd.query_devices()):
+            if dev["max_output_channels"] > 0:
+                logger.info("No ALSA default output — falling back to device %d: %s", i, dev["name"])
+                return i
+    except Exception:
+        pass
+
+    return None  # let sounddevice try anyway
+
+
+def _resolve_input_device(device: Optional[str | int]) -> Optional[str | int]:
+    """Return a valid sounddevice input device identifier."""
+    import sounddevice as sd
+
+    if device is not None:
+        return device
+
+    try:
+        info = sd.query_devices(kind="input")
+        idx = info.get("index", -1) if isinstance(info, dict) else getattr(info, "index", -1)
+        if idx >= 0:
+            return None
+    except Exception:
+        pass
+
+    try:
+        for i, dev in enumerate(sd.query_devices()):
+            if dev["max_input_channels"] > 0:
+                logger.info("No ALSA default input — falling back to device %d: %s", i, dev["name"])
+                return i
+    except Exception:
+        pass
+
+    return None
+
+
 class AudioPlayback:
     """Plays an async iterator of int16 PCM chunks through the output device."""
 
@@ -38,12 +93,14 @@ class AudioPlayback:
         loop = asyncio.get_event_loop()
         write_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue(maxsize=20)
 
+        resolved = _resolve_output_device(self.device)
+
         def _blocking_player() -> None:
             with sd.RawOutputStream(
                 samplerate=self.sample_rate,
                 channels=self.channels,
                 dtype="int16",
-                device=self.device,
+                device=resolved,
             ) as stream:
                 while True:
                     chunk = asyncio.run_coroutine_threadsafe(
