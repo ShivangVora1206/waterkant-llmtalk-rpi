@@ -228,7 +228,14 @@ class PiperBackend(TTSBackend):
             None,
             lambda: piper_voice.synthesize(text, buf, **extra),
         )
-        data = buf.getvalue()
+
+        # synthesize() writes a WAV file (header + PCM) — strip the header,
+        # yield only the raw int16 PCM frames so the playback resampler works.
+        import wave
+        buf.seek(0)
+        with wave.open(buf, "rb") as wf:
+            pcm_data = wf.readframes(wf.getnframes())
+
         chunk_size = 4096
-        for i in range(0, len(data), chunk_size):
-            yield data[i : i + chunk_size]
+        for i in range(0, len(pcm_data), chunk_size):
+            yield pcm_data[i : i + chunk_size]
