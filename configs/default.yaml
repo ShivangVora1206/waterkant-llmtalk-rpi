@@ -1,0 +1,50 @@
+mode: continuous  # continuous | push_to_talk
+
+audio:
+  input_device: null   # null = system default; else ALSA device name or index
+  output_device: null
+  sample_rate: 16000
+  channels: 1
+
+vad:
+  enabled: true
+  threshold: 0.5          # 0.0–1.0 Silero score
+  min_speech_ms: 250
+  silence_timeout_ms: 800
+
+stt:
+  backend: faster_whisper
+  model: base.en          # tiny.en|base.en|small.en|medium.en|distil-small.en
+  compute_type: int8
+  language: en
+  beam_size: 1
+
+llm:
+  backend: ollama
+  base_url: http://127.0.0.1:11434
+  model: llama3.2:3b
+  temperature: 0.7
+  top_p: 0.9
+  top_k: 40
+  num_ctx: 4096
+  num_predict: 512
+  repeat_penalty: 1.1
+  system_prompt: |
+    You are a concise, friendly voice assistant. Answer in 1–3 sentences
+    unless the user asks for more detail. Avoid markdown and lists.
+  keep_alive: 10m
+
+tts:
+  backend: piper
+  voice: en_US-lessac-medium
+  speed: 1.0
+  noise_scale: 0.667
+  length_scale: 1.0
+
+conversation:
+  history_turns: 6
+  store_to_disk: true
+
+server:
+  host: 0.0.0.0
+  port: 8080

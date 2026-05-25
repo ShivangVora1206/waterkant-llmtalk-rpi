@@ -1,0 +1,32 @@
+__pycache__/
+*.py[cod]
+*.so
+.Python
+.venv/
+venv/
+.env
+*.egg-info/
+dist/
+build/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# data (runtime)
+data/conversations.sqlite
+data/logs/
+data/models/
+
+# frontend build
+frontend/dist/
+frontend/node_modules/
+frontend/.vite/
+
+# configs runtime override
+configs/runtime.json
+
+# OS
+.DS_Store
+Thumbs.db
