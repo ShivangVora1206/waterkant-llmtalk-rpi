@@ -22,11 +22,9 @@ export function Dashboard() {
     } catch { /* ignore */ }
   }
 
-  // Load turns on mount and after each IDLE transition
+  // Load turns on mount and whenever the backend signals a new turn was persisted
   useEffect(() => { refreshTurns() }, [])
-  useEffect(() => {
-    if (ws.state === 'IDLE') refreshTurns()
-  }, [ws.state])
+  useEffect(() => { refreshTurns() }, [ws.conversationVersion])
 
   const handleNewConv = async () => {
     await newConversation()

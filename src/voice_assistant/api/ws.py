@@ -41,6 +41,7 @@ class WSManager:
             "audio.level",
             "system.health",
             "config.changed",
+            "conversation.updated",
             "error",
         ]
         for topic in topics:

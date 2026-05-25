@@ -11,6 +11,7 @@ export interface WSState {
   health: SystemHealth | null
   lastError: string | null
   events: WSEvent[]
+  conversationVersion: number
 }
 
 const MAX_EVENTS = 100
@@ -24,6 +25,7 @@ export function useWebSocketState(): WSState {
   const [health, setHealth] = useState<SystemHealth | null>(null)
   const [lastError, setLastError] = useState<string | null>(null)
   const [events, setEvents] = useState<WSEvent[]>([])
+  const [conversationVersion, setConversationVersion] = useState(0)
   const responseBuffer = useRef('')
 
   useEffect(() => {
@@ -67,6 +69,9 @@ export function useWebSocketState(): WSState {
         case 'system.health':
           setHealth(evt.data as SystemHealth)
           break
+        case 'conversation.updated':
+          setConversationVersion(v => v + 1)
+          break
         case 'error': {
           const d = evt.data as { message: string }
           setLastError(d.message ?? 'Unknown error')
@@ -88,5 +93,6 @@ export function useWebSocketState(): WSState {
     health,
     lastError,
     events,
+    conversationVersion,
   }
 }
