@@ -6,7 +6,8 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SERVICE_USER="${SERVICE_USER:-voice}"
+# Default to the current (logged-in) user so .venv permissions are always right
+SERVICE_USER="${SERVICE_USER:-$(whoami)}"
 PORT="${PORT:-8080}"
 
 info()  { echo "[INFO]  $*"; }
@@ -123,16 +124,19 @@ info "Downloading default models…"
 bash "$REPO_DIR/scripts/pull_default_models.sh"
 
 # --------------------------------------------------------------------
-# 8. Service user
+# 8. Service user — ensure they exist and are in the audio group
 # --------------------------------------------------------------------
 if ! id "$SERVICE_USER" &>/dev/null; then
     info "Creating service user: $SERVICE_USER"
-    sudo useradd -r -m -s /bin/false "$SERVICE_USER"
-    sudo usermod -aG audio "$SERVICE_USER"
+    sudo useradd -r -m -G audio "$SERVICE_USER"
+else
+    info "Service user: $SERVICE_USER (already exists)"
+    # Make sure user is in audio group for mic/speaker access
+    sudo usermod -aG audio "$SERVICE_USER" 2>/dev/null || true
 fi
-# Give the service user read access to the repo and write access to data/
-sudo chown -R "$SERVICE_USER:$SERVICE_USER" "$REPO_DIR/data" 2>/dev/null || true
-sudo chmod -R a+rX "$REPO_DIR"
+# Ensure data directory is writable by service user
+mkdir -p "$REPO_DIR/data/logs" "$REPO_DIR/data/models" "$REPO_DIR/configs"
+sudo chown -R "$SERVICE_USER" "$REPO_DIR/data" "$REPO_DIR/configs" || true
 
 # --------------------------------------------------------------------
 # 9. systemd service

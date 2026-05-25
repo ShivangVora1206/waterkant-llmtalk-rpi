@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -32,6 +33,8 @@ from .utils.events import get_event_bus
 from .utils.health import HealthMonitor
 from .utils.logging import configure_logging
 
+logger = logging.getLogger(__name__)
+
 FRONTEND_DIST = Path(__file__).parent.parent.parent / "frontend" / "dist"
 
 
@@ -47,9 +50,14 @@ async def lifespan(app: FastAPI):
     # State machine
     sm = StateMachine(event_bus=bus)
 
-    # Audio devices
-    input_dev = cfg.audio.input_device or pick_default_input()
-    output_dev = cfg.audio.output_device or pick_default_output()
+    # Audio devices — gracefully fall back to None (system default) on error
+    try:
+        input_dev = cfg.audio.input_device or pick_default_input()
+        output_dev = cfg.audio.output_device or pick_default_output()
+    except Exception as exc:
+        logger.warning("Audio device enumeration failed (%s) — using system defaults", exc)
+        input_dev = None
+        output_dev = None
 
     capture = AudioCapture(
         sample_rate=cfg.audio.sample_rate,
@@ -64,7 +72,7 @@ async def lifespan(app: FastAPI):
         silence_timeout_ms=cfg.vad.silence_timeout_ms,
     )
 
-    # STT
+    # STT — do NOT load the model at startup; load lazily on first transcription
     stt_backend = FasterWhisperBackend(
         model_name=cfg.stt.model,
         compute_type=cfg.stt.compute_type,
@@ -75,7 +83,7 @@ async def lifespan(app: FastAPI):
     # LLM
     llm_backend = OllamaBackend(base_url=cfg.llm.base_url, event_bus=bus)
 
-    # TTS
+    # TTS — do NOT download voice at startup; download lazily on first synthesis
     tts_backend = PiperBackend(
         voice=cfg.tts.voice,
         speed=cfg.tts.speed,
@@ -109,7 +117,7 @@ async def lifespan(app: FastAPI):
     health_monitor = HealthMonitor(bus)
     await health_monitor.start()
 
-    # Attach to app state for route access
+    # Attach everything to app state so routes can reach it
     app.state.config_store = cfg_store
     app.state.event_bus = bus
     app.state.state_machine = sm
@@ -122,13 +130,22 @@ async def lifespan(app: FastAPI):
     app.state.conversation = conversation
     app.state.ws_manager = ws_manager
 
-    # Start orchestrator (begins listening)
-    await orchestrator.start()
+    # Start orchestrator — catches its own errors and logs them without crashing the server
+    try:
+        await orchestrator.start()
+    except Exception as exc:
+        logger.error("Orchestrator failed to start: %s — dashboard still available", exc)
+        await bus.publish("error", {"component": "orchestrator", "message": str(exc)})
+
+    logger.info("Voice assistant started — dashboard at http://0.0.0.0:%d", cfg.server.port)
 
     yield
 
     # Shutdown
-    await orchestrator.stop()
+    try:
+        await orchestrator.stop()
+    except Exception:
+        pass
     await conversation.close()
     await health_monitor.stop()
     if hasattr(llm_backend, "close"):
@@ -144,7 +161,7 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # restrict in production
+        allow_origins=["*"],
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -161,19 +178,24 @@ def create_app() -> FastAPI:
     async def ws_state(websocket: WebSocket):
         await websocket.app.state.ws_manager.connect(websocket)
 
-    # Health check
+    # Health check — always answers, even if orchestrator is unhealthy
     @app.get("/healthz")
     async def healthz():
         return {"status": "ok"}
 
-    # Serve React frontend
+    # Serve React frontend if built
     if FRONTEND_DIST.exists():
         app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")
     else:
         @app.get("/")
         async def root():
             return JSONResponse(
-                {"message": "Voice Assistant API running. Build the frontend to see the dashboard."},
+                {
+                    "status": "running",
+                    "message": "Voice Assistant API is up. Frontend not built yet.",
+                    "hint": "Run: cd frontend && pnpm install && pnpm build",
+                    "api_docs": "/docs",
+                },
                 status_code=200,
             )
 
