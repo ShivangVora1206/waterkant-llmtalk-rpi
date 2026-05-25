@@ -1,6 +1,6 @@
 [Unit]
 Description=Voice Assistant (local LLM + STT + TTS)
-After=network-online.target ollama.service
+After=network-online.target ollama.service sound.target
 Wants=network-online.target ollama.service
 StartLimitIntervalSec=60
 StartLimitBurst=5
@@ -8,22 +8,22 @@ StartLimitBurst=5
 [Service]
 Type=simple
 User=__SERVICE_USER__
+Group=__SERVICE_USER__
+SupplementaryGroups=audio
 WorkingDirectory=__REPO_DIR__
 Environment=LOG_LEVEL=INFO
-Environment=PORT=__PORT__
-ExecStart=__REPO_DIR__/.venv/bin/python -m uvicorn voice_assistant.main:app \
+Environment=HOME=/home/__SERVICE_USER__
+Environment=PATH=__REPO_DIR__/.venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=__REPO_DIR__/.venv/bin/uvicorn voice_assistant.main:app \
     --host 0.0.0.0 \
     --port __PORT__ \
     --workers 1 \
     --log-level info
-Restart=always
-RestartSec=5
+Restart=on-failure
+RestartSec=10
 MemoryHigh=12G
 MemoryMax=14G
-TimeoutStartSec=120
-
-# Allow audio device access
-SupplementaryGroups=audio
+TimeoutStartSec=180
 
 StandardOutput=journal
 StandardError=journal
