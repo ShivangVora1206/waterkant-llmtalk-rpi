@@ -52,6 +52,7 @@ class FasterWhisperBackend(STTBackend):
 
     # ------------------------------------------------------------------
     async def load(self, model_name: Optional[str] = None) -> None:
+        import asyncio
         import psutil
         from faster_whisper import WhisperModel
 
@@ -63,14 +64,17 @@ class FasterWhisperBackend(STTBackend):
 
         MODEL_CACHE.mkdir(parents=True, exist_ok=True)
         logger.info("Loading Whisper model %s (compute_type=%s)", self.model_name, self.compute_type)
-        self._model = WhisperModel(
-            self.model_name,
-            device="cpu",
-            compute_type=self.compute_type,
-            download_root=str(MODEL_CACHE),
-        )
+        print(f"[STT] loading Whisper {self.model_name} (may download ~145 MB on first run)…", flush=True)
 
-        # Warm-up: 1 s of silence avoids first-call spike
+        name, compute, cache = self.model_name, self.compute_type, str(MODEL_CACHE)
+        loop = asyncio.get_event_loop()
+        self._model = await loop.run_in_executor(
+            None,
+            lambda: WhisperModel(name, device="cpu", compute_type=compute, download_root=cache),
+        )
+        print(f"[STT] Whisper {self.model_name} loaded", flush=True)
+
+        # Warm-up with 1 s of silence to avoid first-call latency spike
         silence = np.zeros(16000, dtype=np.int16).tobytes()
         await self.transcribe(silence, 16000)
 
@@ -91,24 +95,34 @@ class FasterWhisperBackend(STTBackend):
 
     # ------------------------------------------------------------------
     async def transcribe(self, pcm: bytes, sample_rate: int) -> Transcript:
+        import asyncio
+
         if self._model is None:
             await self.load()
 
         t0 = time.monotonic()
         audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
 
-        segments_iter, info = self._model.transcribe(
-            audio,
-            language=self.language if self.language != "auto" else None,
-            beam_size=self.beam_size,
-            vad_filter=False,  # we do VAD ourselves
-        )
+        model = self._model
+        language = self.language if self.language != "auto" else None
+        beam_size = self.beam_size
 
-        segments = []
-        text_parts = []
-        for seg in segments_iter:
-            segments.append(TranscriptSegment(seg.start, seg.end, seg.text.strip()))
-            text_parts.append(seg.text.strip())
+        def _run() -> tuple:
+            segs_iter, info = model.transcribe(
+                audio,
+                language=language,
+                beam_size=beam_size,
+                vad_filter=False,
+            )
+            segments = []
+            text_parts = []
+            for seg in segs_iter:
+                segments.append(TranscriptSegment(seg.start, seg.end, seg.text.strip()))
+                text_parts.append(seg.text.strip())
+            return segments, text_parts, info
+
+        loop = asyncio.get_event_loop()
+        segments, text_parts, info = await loop.run_in_executor(None, _run)
 
         latency_ms = (time.monotonic() - t0) * 1000
         text = " ".join(text_parts).strip()

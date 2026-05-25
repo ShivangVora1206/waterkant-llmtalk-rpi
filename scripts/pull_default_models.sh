@@ -9,6 +9,23 @@ info() { echo "[INFO]  $*"; }
 
 mkdir -p "$DATA_DIR/whisper" "$DATA_DIR/piper"
 
+# Whisper STT (faster-whisper base.en, ~145 MB)
+WHISPER_MODEL="base.en"
+WHISPER_DIR="$DATA_DIR/whisper"
+if [ ! -d "$WHISPER_DIR/models--Systran--faster-whisper-base.en" ] && \
+   [ ! -d "$WHISPER_DIR/models--guillaumekln--faster-whisper-base.en" ]; then
+    info "Downloading faster-whisper model: $WHISPER_MODEL"
+    uv run python -c "
+from faster_whisper import WhisperModel
+import sys
+print('Downloading faster-whisper $WHISPER_MODEL …', flush=True)
+WhisperModel('$WHISPER_MODEL', device='cpu', compute_type='int8', download_root='$WHISPER_DIR')
+print('Done.', flush=True)
+" || info "faster-whisper download failed — will retry on first use"
+else
+    info "faster-whisper model already present: $WHISPER_MODEL"
+fi
+
 # Ollama — pull default LLM
 info "Pulling Ollama model llama3.2:3b (this may take a while)…"
 ollama pull llama3.2:3b || info "Ollama pull failed or already present"
