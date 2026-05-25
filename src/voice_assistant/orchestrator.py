@@ -16,7 +16,6 @@ from .llm.base import LLMBackend
 from .llm.ollama import OllamaError
 from .state import InvalidTransitionError, PipelineState, StateMachine
 from .stt.base import STTBackend
-from .stt.service import STTService
 from .tts.base import TTSBackend
 from .tts.service import TTSService
 from .utils.events import EventBus
@@ -44,11 +43,7 @@ class Orchestrator:
         self._capture = capture
         self._playback = playback
         self._vad = vad
-        self._stt = STTService(
-            backend=stt_backend,
-            vad=vad,
-            event_bus=event_bus,
-        )
+        self._stt_backend = stt_backend
         self._llm = llm_backend
         self._tts = TTSService(backend=tts_backend, playback=playback, event_bus=event_bus)
         self._conv = conversation
@@ -58,10 +53,16 @@ class Orchestrator:
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._llm_task: Optional[asyncio.Task] = None
+        # Shared speech accumulation buffer (written by loop, read by ptt_stop)
+        self._speech_buffer: list[bytes] = []
 
     # ------------------------------------------------------------------
     async def start(self) -> None:
         self._running = True
+        # Preload VAD ONNX model in a thread so the first frame doesn't block
+        # the event loop (model init takes 2-5 s on Pi 5).
+        ev_loop = asyncio.get_event_loop()
+        await ev_loop.run_in_executor(None, self._vad._load)
         await self._capture.start()
         self._task = asyncio.create_task(self._loop(), name="orchestrator_loop")
         logger.info("Orchestrator started")
@@ -75,13 +76,19 @@ class Orchestrator:
 
     # ------------------------------------------------------------------
     async def _loop(self) -> None:
-        cfg = self._cfg.get()
+        logger.info("Orchestrator loop starting")
         await self._safe_transition(PipelineState.LISTENING)
+        logger.info("Orchestrator loop listening")
 
         async for frame in self._capture:
             if not self._running:
                 break
             if self._paused:
+                continue
+
+            # In PTT mode just accumulate every frame — no VAD gating.
+            if self._ptt_active:
+                self._speech_buffer.append(frame)
                 continue
 
             state = self._sm.state
@@ -92,47 +99,58 @@ class Orchestrator:
 
             if vad_event == VADEvent.SPEECH_START:
                 if state == PipelineState.SPEAKING:
-                    # barge-in
-                    cfg = self._cfg.get()
+                    # barge-in: stop current response
                     self._tts.interrupt()
                     if self._llm_task:
                         self._llm_task.cancel()
                     await self._safe_transition(PipelineState.LISTENING)
-                self._stt.start_capture()
+                # Start a fresh accumulation buffer
+                self._speech_buffer = [frame]
+                logger.debug("VAD: speech start")
 
-            if self._vad.in_speech or vad_event == VADEvent.SPEECH_START:
-                self._stt._buffer.append(frame)
+            elif self._vad.in_speech:
+                self._speech_buffer.append(frame)
 
-            if vad_event == VADEvent.SPEECH_END:
-                await self._handle_utterance()
+            elif vad_event == VADEvent.SPEECH_END:
+                logger.debug("VAD: speech end (%d frames)", len(self._speech_buffer))
+                if self._speech_buffer:
+                    buf = self._speech_buffer
+                    self._speech_buffer = []
+                    await self._handle_utterance(buf)
+
+        logger.info("Orchestrator loop exited")
 
     # ------------------------------------------------------------------
-    async def _handle_utterance(self) -> None:
+    async def _handle_utterance(self, buffer: list[bytes]) -> None:
         cfg = self._cfg.get()
-        audio = b"".join(self._stt._buffer)
-        self._stt._buffer.clear()
-
+        audio = b"".join(buffer)
         if not audio:
+            logger.debug("_handle_utterance: empty buffer, skipping")
             return
+
+        duration_ms = len(audio) / 2 / cfg.audio.sample_rate * 1000
+        logger.info("Utterance: %.0f ms of audio → STT", duration_ms)
 
         # STT
         try:
             await self._safe_transition(PipelineState.TRANSCRIBING)
-            t_stt_start = time.monotonic()
-            transcript = await self._stt._backend.transcribe(audio, cfg.audio.sample_rate)
-            stt_latency_ms = (time.monotonic() - t_stt_start) * 1000
+            t0 = time.monotonic()
+            transcript = await self._stt_backend.transcribe(audio, cfg.audio.sample_rate)
+            stt_ms = (time.monotonic() - t0) * 1000
         except Exception as exc:
+            logger.error("STT error: %s", exc, exc_info=True)
             await self._publish_error("stt", str(exc))
             await self._recover()
             return
 
         text = transcript.text.strip()
+        logger.info("STT result: %r (%.0f ms)", text, stt_ms)
         if not text:
             await self._safe_transition(PipelineState.LISTENING)
             return
 
-        await self._bus.publish("stt.final", {"text": text, "latency_ms": stt_latency_ms})
-        await self._conv.add_turn("user", text, stt_latency_ms=stt_latency_ms)
+        await self._bus.publish("stt.final", {"text": text, "latency_ms": stt_ms})
+        await self._conv.add_turn("user", text, stt_latency_ms=stt_ms)
 
         # LLM
         try:
@@ -150,17 +168,18 @@ class Orchestrator:
                 "repeat_penalty": cfg.llm.repeat_penalty,
                 "keep_alive": cfg.llm.keep_alive,
             }
-            t_llm_start = time.monotonic()
+            t_llm = time.monotonic()
             token_stream = self._llm.stream(messages, llm_params)
         except Exception as exc:
+            logger.error("LLM setup error: %s", exc, exc_info=True)
             await self._publish_error("llm", str(exc))
             await self._recover()
             return
 
-        # TTS
+        # TTS (streams LLM tokens → sentences → Piper → speaker)
         try:
             await self._safe_transition(PipelineState.SPEAKING)
-            full_response = []
+            full_response: list[str] = []
 
             async def _collecting_stream():
                 async for tok in token_stream:
@@ -170,14 +189,16 @@ class Orchestrator:
             self._llm_task = asyncio.current_task()
             await self._tts.speak_stream(_collecting_stream())
 
-            llm_latency_ms = (time.monotonic() - t_llm_start) * 1000
+            llm_ms = (time.monotonic() - t_llm) * 1000
             response_text = "".join(full_response)
+            logger.info("LLM+TTS done (%.0f ms): %r", llm_ms, response_text[:80])
             if response_text.strip():
-                await self._conv.add_turn("assistant", response_text, llm_latency_ms=llm_latency_ms)
+                await self._conv.add_turn("assistant", response_text, llm_latency_ms=llm_ms)
 
         except asyncio.CancelledError:
             logger.info("LLM/TTS cancelled (barge-in or stop)")
         except (OllamaError, Exception) as exc:
+            logger.error("TTS/LLM error: %s", exc, exc_info=True)
             await self._publish_error("tts_or_llm", str(exc))
         finally:
             self._llm_task = None
@@ -206,16 +227,26 @@ class Orchestrator:
     # ------------------------------------------------------------------
     # External control API
     async def ptt_start(self) -> None:
-        """Begin push-to-talk capture."""
-        self._ptt_active = True
+        """Begin push-to-talk recording."""
+        if self._sm.state == PipelineState.SPEAKING:
+            self._tts.interrupt()
+            if self._llm_task:
+                self._llm_task.cancel()
+        self._speech_buffer = []
         self._vad.reset()
-        self._stt.start_capture()
-        await self._safe_transition(PipelineState.LISTENING)
+        self._ptt_active = True
+        logger.info("PTT started")
 
     async def ptt_stop(self) -> None:
-        """End push-to-talk and process."""
+        """End push-to-talk and process the recorded audio."""
         self._ptt_active = False
-        await self._handle_utterance()
+        buf = self._speech_buffer
+        self._speech_buffer = []
+        logger.info("PTT stopped: %d frames buffered", len(buf))
+        if buf:
+            await self._handle_utterance(buf)
+        else:
+            logger.warning("PTT stopped with empty buffer — mic capture may have failed")
 
     async def pause(self) -> None:
         self._paused = True
