@@ -164,8 +164,9 @@ class Orchestrator:
             await self._safe_transition(PipelineState.LISTENING)
             return
 
-        await self._bus.publish("stt.final", {"text": text, "latency_ms": stt_ms})
         await self._conv.add_turn("user", text, stt_latency_ms=stt_ms)
+        await self._bus.publish("stt.final", {"text": text, "latency_ms": stt_ms})
+        await self._bus.publish("conversation.updated", {"role": "user"})
 
         # LLM
         try:
@@ -209,6 +210,7 @@ class Orchestrator:
             logger.info("LLM+TTS done (%.0f ms): %r", llm_ms, response_text[:80])
             if response_text.strip():
                 await self._conv.add_turn("assistant", response_text, llm_latency_ms=llm_ms)
+                await self._bus.publish("conversation.updated", {"role": "assistant"})
 
         except asyncio.CancelledError:
             logger.info("LLM/TTS cancelled (barge-in or stop)")

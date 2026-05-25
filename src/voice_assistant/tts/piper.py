@@ -204,10 +204,29 @@ class PiperBackend(TTSBackend):
         loop = asyncio.get_event_loop()
         # Run in executor so it doesn't block the event loop
         piper_voice = await loop.run_in_executor(None, PiperVoice.load, str(onnx_path))
+
+        # Patch synthesis config if the voice config object exposes these fields
+        if hasattr(piper_voice, "config"):
+            cfg = piper_voice.config
+            if hasattr(cfg, "noise_scale"):
+                cfg.noise_scale = noise_scale
+            if hasattr(cfg, "length_scale"):
+                cfg.length_scale = length_scale
+
         buf = io.BytesIO()
+
+        # synthesize() signature varies by piper-tts version — try with kwargs first
+        import inspect
+        sig = inspect.signature(piper_voice.synthesize)
+        extra = {}
+        if "noise_scale" in sig.parameters:
+            extra["noise_scale"] = noise_scale
+        if "length_scale" in sig.parameters:
+            extra["length_scale"] = length_scale
+
         await loop.run_in_executor(
             None,
-            lambda: piper_voice.synthesize(text, buf, noise_scale=noise_scale, length_scale=length_scale),
+            lambda: piper_voice.synthesize(text, buf, **extra),
         )
         data = buf.getvalue()
         chunk_size = 4096
