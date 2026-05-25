@@ -58,7 +58,9 @@ class AudioCapture:
         if self._running:
             return
         import sounddevice as sd
+        from .playback import _resolve_input_device
 
+        resolved = _resolve_input_device(self.device)
         loop = asyncio.get_event_loop()
 
         def _cb(indata, frames, time_info, status):
@@ -68,13 +70,13 @@ class AudioCapture:
             samplerate=self.sample_rate,
             channels=self.channels,
             dtype="float32",
-            device=self.device,
+            device=resolved,
             blocksize=self._frame_size,
             callback=_cb,
         )
         self._stream.start()
         self._running = True
-        logger.info("AudioCapture started (device=%s, rate=%d)", self.device, self.sample_rate)
+        logger.info("AudioCapture started (device=%s, rate=%d)", resolved, self.sample_rate)
 
         asyncio.create_task(self._level_publisher())
 
