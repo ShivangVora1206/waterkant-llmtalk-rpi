@@ -23,7 +23,8 @@ sudo apt-get install -y --no-install-recommends \
     libportaudio2 libsndfile1 ffmpeg alsa-utils \
     python3 python3-venv python3-pip \
     git curl wget ca-certificates \
-    build-essential
+    build-essential \
+    espeak-ng espeak-ng-data
 
 # Verify Python >= 3.11
 PY_VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")

@@ -193,9 +193,9 @@ class Orchestrator:
             return
 
         # TTS (streams LLM tokens → sentences → Piper → speaker)
+        full_response: list[str] = []
         try:
             await self._safe_transition(PipelineState.SPEAKING)
-            full_response: list[str] = []
 
             async def _collecting_stream():
                 async for tok in token_stream:
@@ -205,13 +205,6 @@ class Orchestrator:
             self._llm_task = asyncio.current_task()
             await self._tts.speak_stream(_collecting_stream())
 
-            llm_ms = (time.monotonic() - t_llm) * 1000
-            response_text = "".join(full_response)
-            logger.info("LLM+TTS done (%.0f ms): %r", llm_ms, response_text[:80])
-            if response_text.strip():
-                await self._conv.add_turn("assistant", response_text, llm_latency_ms=llm_ms)
-                await self._bus.publish("conversation.updated", {"role": "assistant"})
-
         except asyncio.CancelledError:
             logger.info("LLM/TTS cancelled (barge-in or stop)")
         except (OllamaError, Exception) as exc:
@@ -219,6 +212,12 @@ class Orchestrator:
             await self._publish_error("tts_or_llm", str(exc))
         finally:
             self._llm_task = None
+            llm_ms = (time.monotonic() - t_llm) * 1000
+            response_text = "".join(full_response)
+            logger.info("LLM+TTS done (%.0f ms): %r", llm_ms, response_text[:80])
+            if response_text.strip():
+                await self._conv.add_turn("assistant", response_text, llm_latency_ms=llm_ms)
+                await self._bus.publish("conversation.updated", {"role": "assistant"})
 
         await self._recover()
 
