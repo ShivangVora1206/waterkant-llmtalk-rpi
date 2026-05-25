@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 import time
 from typing import Optional
 
@@ -76,9 +77,23 @@ class Orchestrator:
 
     # ------------------------------------------------------------------
     async def _loop(self) -> None:
+        try:
+            await self._loop_body()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Use print so the error is always visible even if logging isn't configured
+            print(f"[ORCHESTRATOR CRASH] {exc}", file=sys.stderr, flush=True)
+            logger.error("Orchestrator loop crashed: %s", exc, exc_info=True)
+            await self._sm.force(PipelineState.ERROR)
+            await self._bus.publish("error", {"component": "orchestrator_loop", "message": str(exc)})
+
+    async def _loop_body(self) -> None:
         logger.info("Orchestrator loop starting")
+        print("[ORCHESTRATOR] loop starting", file=sys.stderr, flush=True)
         await self._safe_transition(PipelineState.LISTENING)
         logger.info("Orchestrator loop listening")
+        print("[ORCHESTRATOR] loop listening", file=sys.stderr, flush=True)
 
         async for frame in self._capture:
             if not self._running:
