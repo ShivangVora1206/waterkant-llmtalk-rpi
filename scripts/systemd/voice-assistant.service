@@ -1,0 +1,33 @@
+[Unit]
+Description=Voice Assistant (local LLM + STT + TTS)
+After=network-online.target ollama.service
+Wants=network-online.target ollama.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=__SERVICE_USER__
+WorkingDirectory=__REPO_DIR__
+Environment=LOG_LEVEL=INFO
+Environment=PORT=__PORT__
+ExecStart=__REPO_DIR__/.venv/bin/python -m uvicorn voice_assistant.main:app \
+    --host 0.0.0.0 \
+    --port __PORT__ \
+    --workers 1 \
+    --log-level info
+Restart=always
+RestartSec=5
+MemoryHigh=12G
+MemoryMax=14G
+TimeoutStartSec=120
+
+# Allow audio device access
+SupplementaryGroups=audio
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=voice-assistant
+
+[Install]
+WantedBy=multi-user.target
